@@ -46,10 +46,13 @@ from trl.trainer.grpo_config import GRPOConfig
 from trl.trainer.utils import generate_model_card, get_comet_experiment_url
 
 if is_peft_available():
-    from peft import PeftConfig, get_peft_model
+    from peft import PeftConfig, get_peft_model, PeftModel
 from vllm import LLM, SamplingParams
 from qwen_vl_utils import process_vision_info
 from .utils import pad
+
+import copy
+import gc
 
 # What we call a reward function is a callable that takes a list of prompts and completions and returns a list of
 # rewards. When it's a string, it's a model ID, so it's loaded as a pretrained model.
@@ -176,7 +179,11 @@ class Qwen2VLGRPOTrainer(Trainer):
             model_id = model
             torch_dtype = model_init_kwargs.get("torch_dtype")
             if isinstance(torch_dtype, torch.dtype) or torch_dtype == "auto" or torch_dtype is None:
-                pass  # torch_dtype is already a torch.dtype or "auto" or None
+                # pass  # torch_dtype is already a torch.dtype or "auto" or None
+                if args.fp16:
+                    model_init_kwargs["torch_dtype"] = "float16"
+                else:
+                    pass
             elif isinstance(torch_dtype, str):  # it's a str, but not "auto"
                 torch_dtype = getattr(torch, torch_dtype)
                 model_init_kwargs["torch_dtype"] = torch_dtype
@@ -207,6 +214,9 @@ class Qwen2VLGRPOTrainer(Trainer):
         # set_requires_grad(vision_model_params, False)
 
         if peft_config is not None:
+            print("enable_input_require_grads:", hasattr(model, "enable_input_require_grads"))
+            if args.gradient_checkpointing:
+                model._hf_peft_config_loaded = True
             model = get_peft_model(model, peft_config)
 
         # Reference model
@@ -322,8 +332,8 @@ class Qwen2VLGRPOTrainer(Trainer):
             # load vllm
             vllm_device = "auto"
             if vllm_device == "auto":
-                # vllm_device = f"cuda:{self.accelerator.num_processes - 1}"  # take the next GPU idx
-                vllm_device = "cuda:7"
+                vllm_device = f"cuda:{self.accelerator.num_processes}"  # take the next GPU idx
+                # vllm_device = "cuda:3"
             # Check that the requested device is available
             if vllm_device.split(":")[0] == "cuda" and int(vllm_device.split(":")[1]) >= torch.cuda.device_count():
                 raise ValueError(
@@ -347,14 +357,17 @@ class Qwen2VLGRPOTrainer(Trainer):
                 "vllm.worker.worker.Worker._assert_memory_footprint_increased_during_profiling", return_value=None
             )
             with world_size_patch, profiling_patch:
+                print(vllm_device)
                 self.llm = LLM(
                     model=model.name_or_path,
                     device=vllm_device,
-                    gpu_memory_utilization=0.7,
+                    gpu_memory_utilization=0.5, # 0.7
                     # Automatic Prefix Caching caches the KV cache of existing queries, so that a new query can
                     # directly reuse the KV cache if it shares the same prefix with one of the existing queries.
                     # This is particularly useful here because we generate completions from the same prompts.
                     enable_prefix_caching=True,
+                    dtype=torch.float16 if args.fp16 else torch.bfloat16,
+                    max_seq_len_to_capture=1024,
                 )
                 self.sampling_params = SamplingParams(
                     temperature=0.9,
@@ -433,10 +446,21 @@ class Qwen2VLGRPOTrainer(Trainer):
             with deepspeed.zero.GatheredParameters(model.parameters()):
                 # remove_hooks(model)
                 unwrapped_model = self.accelerator.unwrap_model(model)
-                if is_compiled_module(unwrapped_model):
-                    state_dict = unwrapped_model._orig_mod.state_dict()
+                if isinstance(unwrapped_model, PeftModel):
+                    temp_model = copy.deepcopy(unwrapped_model.cpu())
+                    temp_model = temp_model.merge_and_unload()
+                    state_dict = temp_model.state_dict()
+                    # device = "cuda:3"
+                    state_dict = {k: v.to(device) for k, v in state_dict.items()}
+                    del temp_model
+                    torch.cuda.empty_cache()
+                    gc.collect()
+                    unwrapped_model.to(device)
                 else:
-                    state_dict = unwrapped_model.state_dict()
+                    if is_compiled_module(unwrapped_model):
+                        state_dict = unwrapped_model._orig_mod.state_dict()
+                    else:
+                        state_dict = unwrapped_model.state_dict()
                 if self.accelerator.is_main_process:
                     llm_model = self.llm.llm_engine.model_executor.driver_worker.model_runner.model
                     llm_model.load_weights(state_dict.items())

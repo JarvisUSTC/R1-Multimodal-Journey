@@ -56,7 +56,7 @@ with open(input_file, 'r') as f:
 
 data_all_filtered = []
 for data_tmp in tqdm(data_all, desc="Processing images", unit="image"):
-    image_path = os.path.join('/path/to/image/folder', data_tmp['image'])
+    image_path = os.path.join('/home/t-jiaweiwang/Project/Datasets/Geo170K/images', data_tmp['image'])
     is_valid = has_valid_image_size_from_path(image_path)
     if is_valid == True:
         data_all_filtered.append(data_tmp)
@@ -68,7 +68,7 @@ print('len(data_all_filtered): ', len(data_all_filtered))
 
 random.shuffle(data_all_filtered)
 for item in data_all_filtered:
-    image_path = os.path.join('/path/to/image/folder', item.get('image'))
+    image_path = os.path.join('/home/t-jiaweiwang/Project/Datasets/Geo170K/images', item.get('image'))
     problem = item['question']
     solution = format_math_explanation(item['answer'])
 

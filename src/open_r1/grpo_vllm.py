@@ -24,12 +24,12 @@ from trl import GRPOConfig, GRPOTrainer, ModelConfig, ScriptArguments, TrlParser
 
 from trainer.grpo_trainer_vllm import Qwen2VLGRPOTrainer
 
-os.environ["WANDB_MODE"] = "offline"
+# os.environ["WANDB_MODE"] = "offline"
 
 import json
-import wandb
+# import wandb
 
-wandb.init(project="R1-multimodal", name="Qwen2_5_7B_R1-multimodal")
+# wandb.init(project="R1-multimodal", name="Qwen2_5_7B_R1-multimodal")
 
 
 @dataclass
@@ -90,8 +90,8 @@ def accuracy_reward(completions, solution, **kwargs):
 
         rewards.append(reward)
         # if os.getenv("DEBUG_MODE") == "true":
-        # log_path = os.getenv("LOG_PATH")
-        log_path = 'train_1.log'
+        log_path = os.getenv("LOG_PATH")
+        # log_path = 'train_1.log'
         with open(log_path, "a") as f:
             try:
                 f.write(f"------------- {current_time} Accuracy reward: {reward} -------------\n")
